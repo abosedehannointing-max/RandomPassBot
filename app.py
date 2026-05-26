@@ -1,15 +1,13 @@
 import os
 import logging
 import sys
-import random
 import asyncio
-import threading
+import random
 from flask import Flask
-from aiohttp import web
+from threading import Thread
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -29,18 +27,13 @@ if not BOT_TOKEN:
     logger.error("❌ BOT_TOKEN not set!")
     sys.exit(1)
 
-# Get Render URL
-RENDER_URL = os.getenv("RENDER_URL")
-if not RENDER_URL:
-    logger.warning("⚠️ RENDER_URL not set")
-    RENDER_URL = "https://your-service.onrender.com"
+logger.info("✅ BOT_TOKEN loaded")
 
-WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
-WEBHOOK_URL = f"{RENDER_URL}{WEBHOOK_PATH}"
-
-# Initialize
+# Initialize bot and dispatcher
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+
+# Flask app for health checks
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
@@ -50,25 +43,25 @@ def health():
 
 def get_dice_keyboard():
     buttons = [
-        [InlineKeyboardButton(text="🎲 1-6", callback_data="dice_1_6"),
-         InlineKeyboardButton(text="🎯 1-10", callback_data="dice_1_10")],
-        [InlineKeyboardButton(text="🎲 1-20", callback_data="dice_1_20"),
-         InlineKeyboardButton(text="🎲 1-100", callback_data="dice_1_100")],
-        [InlineKeyboardButton(text="✏️ Custom Range", callback_data="dice_custom")],
+        [InlineKeyboardButton(text="🎲 1-6", callback_data="1_6"),
+         InlineKeyboardButton(text="🎯 1-10", callback_data="1_10")],
+        [InlineKeyboardButton(text="🎲 1-20", callback_data="1_20"),
+         InlineKeyboardButton(text="🎲 1-100", callback_data="1_100")],
+        [InlineKeyboardButton(text="✏️ Custom Range", callback_data="custom")],
         [InlineKeyboardButton(text="❌ Cancel", callback_data="cancel")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 @dp.message(Command("start"))
 async def start_command(message: types.Message):
-    logger.info(f"/start from {message.from_user.id}")
+    logger.info(f"✅ /start from user {message.from_user.id}")
     await message.answer(
         "🎲 *Random Number Generator Bot*\n\n"
         "Generate random numbers instantly.\n\n"
         "📌 *How to use:*\n"
-        "1. Choose a range\n"
+        "1. Choose a range below\n"
         "2. Get your random number!\n\n"
-        "Click below to start 👇",
+        "👇 Click to start:",
         parse_mode="Markdown",
         reply_markup=get_dice_keyboard()
     )
@@ -79,7 +72,9 @@ async def help_command(message: types.Message):
         "📖 *Commands:*\n"
         "/start - Generate a random number\n"
         "/help - Show this help\n\n"
-        "Send /start to begin!",
+        "🎲 *Examples:*\n"
+        "- Click 1-6 for dice roll\n"
+        "- Click Custom and send `1 100`",
         parse_mode="Markdown"
     )
 
@@ -92,24 +87,29 @@ async def handle_callbacks(callback: types.CallbackQuery):
         await callback.answer()
         return
     
-    if data == "dice_custom":
+    if data == "custom":
         await callback.message.edit_text(
             "✏️ Send me a custom range:\n\n"
             "`min max`\n\n"
             "Example: `1 100`\n"
-            "Example: `50 200`",
+            "Example: `50 200`\n\n"
+            "Send /start to cancel.",
             parse_mode="Markdown"
         )
         await callback.answer()
         return
     
-    if data.startswith("dice_"):
-        range_str = data.replace("dice_", "")
-        min_val, max_val = map(int, range_str.split("_"))
+    # Handle dice rolls (format: "1_6", "1_10", etc.)
+    if "_" in data:
+        min_val, max_val = map(int, data.split("_"))
         random_num = random.randint(min_val, max_val)
         
+        # Dice face for 1-6
+        dice_faces = ["⚀", "⚁", "⚂", "⚃", "⚄", "⚅"]
+        visual = dice_faces[random_num - 1] if max_val == 6 else "🎲"
+        
         await callback.message.edit_text(
-            f"🎲 *Your Random Number*\n\n"
+            f"{visual} *Your Random Number*\n\n"
             f"**{random_num}**\n\n"
             f"🎯 Range: {min_val} to {max_val}\n\n"
             f"Send /start to generate another.",
@@ -122,7 +122,10 @@ async def handle_custom_range(message: types.Message):
     try:
         parts = message.text.strip().split()
         if len(parts) != 2:
-            await message.answer("❌ Send: `min max` (e.g., `1 100`)", parse_mode="Markdown")
+            await message.answer(
+                "❌ Send two numbers: `min max`\n\nExample: `1 100`",
+                parse_mode="Markdown"
+            )
             return
         
         min_val = int(parts[0])
@@ -132,49 +135,48 @@ async def handle_custom_range(message: types.Message):
             await message.answer("❌ Minimum must be less than maximum.")
             return
         
+        if max_val - min_val > 1000000:
+            await message.answer("❌ Range too large (max 1,000,000 difference).")
+            return
+        
         random_num = random.randint(min_val, max_val)
         
         await message.answer(
             f"🎲 *Your Random Number*\n\n"
             f"**{random_num}**\n\n"
-            f"🎯 Range: {min_val} to {max_val}",
+            f"🎯 Range: {min_val} to {max_val}\n\n"
+            f"Send /start to generate another.",
             parse_mode="Markdown"
         )
     except ValueError:
-        await message.answer("❌ Send numbers only. Example: `1 100`", parse_mode="Markdown")
+        await message.answer("❌ Please send numbers only. Example: `1 100`", parse_mode="Markdown")
 
-async def on_startup():
-    await bot.set_webhook(WEBHOOK_URL)
-    logger.info(f"✅ Webhook set to: {WEBHOOK_URL}")
+def run_flask():
+    """Run Flask in a separate thread"""
+    port = int(os.environ.get("PORT", 8080))
+    flask_app.run(host="0.0.0.0", port=port, use_reloader=False)
 
-async def main():
-    # Setup aiohttp app
-    aiohttp_app = web.Application()
-    webhook_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
-    webhook_handler.register(aiohttp_app, path=WEBHOOK_PATH)
-    
-    # Run Flask in background thread
-    def run_flask():
-        port = int(os.environ.get("PORT", 8080))
-        flask_app.run(host="0.0.0.0", port=port, use_reloader=False)
-    
-    threading.Thread(target=run_flask, daemon=True).start()
-    
-    await on_startup()
-    
+async def run_bot():
+    """Run the bot with polling"""
     logger.info("=" * 45)
     logger.info("🎲 RANDOM NUMBER BOT STARTING")
-    logger.info(f"🤖 Bot: {(await bot.get_me()).username}")
+    me = await bot.get_me()
+    logger.info(f"🤖 Bot: @{me.username}")
+    logger.info("📡 Using polling mode (not webhook)")
     logger.info("=" * 45)
     
-    # Run aiohttp server
-    port = int(os.environ.get("PORT", 8080))
-    runner = web.AppRunner(aiohttp_app)
-    await runner.setup()
-    site = web.TCPSite(runner, host="0.0.0.0", port=port)
-    await site.start()
+    # Start polling (this runs forever)
+    await dp.start_polling(bot)
+
+def main():
+    """Main function to run both Flask and bot"""
+    # Start Flask in background thread
+    flask_thread = Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    logger.info("✅ Flask health check server started on port " + os.environ.get("PORT", "8080"))
     
-    await asyncio.Event().wait()
+    # Run bot in main thread
+    asyncio.run(run_bot())
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
