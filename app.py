@@ -182,8 +182,13 @@ async def main():
     logger.info(f"🤖 Bot: @{me.username}")
     logger.info(f"🆔 Bot ID: {me.id}")
     logger.info("=" * 45)
-    logger.info("✅ Bot is polling for messages...")
     
+    # IMPORTANT: Delete any existing webhook
+    logger.info("🔄 Deleting existing webhook...")
+    await bot.delete_webhook(drop_pending_updates=True)
+    logger.info("✅ Webhook deleted")
+    
+    logger.info("✅ Bot is polling for messages...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
